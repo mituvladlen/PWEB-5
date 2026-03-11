@@ -2,9 +2,12 @@
 """go2web - A command-line HTTP client using raw sockets (no HTTP libraries)."""
 
 import sys
+import os
+import json
 import socket
 import ssl
-import io
+import hashlib
+import time
 from html.parser import HTMLParser
 from urllib.parse import urlparse, quote_plus, parse_qs
 
@@ -127,16 +130,124 @@ def resolve_url(base: str, location: str) -> str:
     return f'{p.scheme}://{p.netloc}{base_dir}/{location}'
 
 
+# ---------------------------------------------------------------------------
+# File-based HTTP cache
+# ---------------------------------------------------------------------------
+
+CACHE_DIR = os.path.join(os.path.expanduser('~'), '.go2web_cache')
+
+
+def _cache_key(url: str) -> str:
+    return hashlib.sha256(url.encode()).hexdigest()
+
+
+def _cache_path(url: str) -> str:
+    os.makedirs(CACHE_DIR, exist_ok=True)
+    return os.path.join(CACHE_DIR, _cache_key(url) + '.json')
+
+
+def _parse_max_age(headers: dict) -> int | None:
+    cc = headers.get('cache-control', '')
+    for part in cc.split(','):
+        part = part.strip()
+        if part.startswith('max-age='):
+            try:
+                return int(part[8:])
+            except ValueError:
+                pass
+        if part in ('no-store', 'no-cache'):
+            return 0
+    return None
+
+
+def _parse_expires(headers: dict) -> float | None:
+    exp = headers.get('expires', '')
+    if not exp:
+        return None
+    for fmt in (
+        '%a, %d %b %Y %H:%M:%S %Z',
+        '%A, %d-%b-%y %H:%M:%S %Z',
+        '%a %b %d %H:%M:%S %Y',
+    ):
+        try:
+            import calendar
+            import email.utils
+            t = email.utils.parsedate_to_datetime(exp)
+            return t.timestamp()
+        except Exception:
+            pass
+    return None
+
+
+def cache_load(url: str):
+    """Return (headers, body) from cache if fresh, else None."""
+    path = _cache_path(url)
+    if not os.path.exists(path):
+        return None
+    try:
+        with open(path, 'r', encoding='utf-8') as f:
+            entry = json.load(f)
+    except (OSError, json.JSONDecodeError):
+        return None
+
+    headers = entry.get('headers', {})
+    stored_at = entry.get('stored_at', 0)
+    max_age = _parse_max_age(headers)
+
+    if max_age is not None:
+        if max_age <= 0 or (time.time() - stored_at) > max_age:
+            return None
+    else:
+        exp = _parse_expires(headers)
+        if exp is not None:
+            if time.time() > exp:
+                return None
+        else:
+            # No explicit TTL — honour for 1 hour by default
+            if (time.time() - stored_at) > 3600:
+                return None
+
+    return headers, entry.get('body', '')
+
+
+def cache_store(url: str, headers: dict, body: str):
+    """Persist a response to the cache."""
+    path = _cache_path(url)
+    entry = {
+        'url': url,
+        'stored_at': time.time(),
+        'headers': headers,
+        'body': body,
+    }
+    try:
+        with open(path, 'w', encoding='utf-8') as f:
+            json.dump(entry, f, ensure_ascii=False)
+    except OSError:
+        pass
+
+
 def fetch(url: str, _hops: int = 0):
-    """GET a URL, following redirects. Returns (status, headers, body)."""
+    """GET a URL, following redirects, with cache support."""
     if _hops >= MAX_REDIRECTS:
         print('Error: too many redirects', file=sys.stderr)
         return None, None, None
+
+    # Check cache before hitting the network
+    cached = cache_load(url)
+    if cached is not None:
+        headers, body = cached
+        return 200, headers, body
+
     status, headers, body = raw_request(url)
     if status in REDIRECT_CODES:
         loc = headers.get('location', '')
         if loc:
             return fetch(resolve_url(url, loc), _hops + 1)
+
+    # Cache successful responses
+    if status == 200 and headers and body:
+        cache_store(url, headers, body)
+
     return status, headers, body
 
 
