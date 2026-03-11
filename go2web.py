@@ -4,8 +4,15 @@
 import sys
 import socket
 import ssl
+import io
 from html.parser import HTMLParser
 from urllib.parse import urlparse, quote_plus, parse_qs
+
+# Ensure UTF-8 output on Windows consoles
+if hasattr(sys.stdout, 'reconfigure'):
+    sys.stdout.reconfigure(encoding='utf-8', errors='replace')
+if hasattr(sys.stderr, 'reconfigure'):
+    sys.stderr.reconfigure(encoding='utf-8', errors='replace')
 
 MAX_REDIRECTS = 10
 REDIRECT_CODES = {301, 302, 303, 307, 308}
@@ -274,6 +281,7 @@ def cmd_help():
         'Usage:\n'
         '  go2web -u <URL>          Make an HTTP request to URL and print the response\n'
         '  go2web -s <search-term>  Search the web and print the top 10 results\n'
+        '                          (prompts to open a result after listing)\n'
         '  go2web -h                Show this help message\n'
         '\n'
         'Examples:\n'
@@ -318,6 +326,24 @@ def cmd_search(term: str):
         if snip:
             print(f'   {snip}')
         print()
+
+    # Allow the user to follow a result
+    try:
+        choice = input('Enter a result number to open it (or press Enter to quit): ').strip()
+    except (EOFError, KeyboardInterrupt):
+        print()
+        return
+    if not choice:
+        return
+    try:
+        idx = int(choice) - 1
+        if 0 <= idx < len(results):
+            print()
+            cmd_url(results[idx]['url'])
+        else:
+            print('Invalid number.')
+    except ValueError:
+        print('Invalid input.')
 
 
 # ---------------------------------------------------------------------------
