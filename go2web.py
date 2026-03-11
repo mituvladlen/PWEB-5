@@ -44,7 +44,7 @@ def decode_chunked(data: bytes) -> bytes:
     return result
 
 
-def raw_request(url: str):
+def raw_request(url: str, accept: str = 'text/html,application/xhtml+xml,application/json;q=0.9,*/*;q=0.8'):
     """
     Perform a GET request using a raw TCP socket.
     Returns (status_code, headers_dict, body_str).
@@ -59,7 +59,7 @@ def raw_request(url: str):
         f'GET {path} HTTP/1.1\r\n'
         f'Host: {host}\r\n'
         f'User-Agent: Mozilla/5.0 (compatible; go2web/1.0)\r\n'
-        f'Accept: text/html,application/xhtml+xml,application/json;q=0.9,*/*;q=0.8\r\n'
+        f'Accept: {accept}\r\n'
         f'Accept-Language: en-US,en;q=0.5\r\n'
         f'Connection: close\r\n'
         f'\r\n'
@@ -226,7 +226,7 @@ def cache_store(url: str, headers: dict, body: str):
         pass
 
 
-def fetch(url: str, _hops: int = 0):
+def fetch(url: str, _hops: int = 0, accept: str = 'text/html,application/xhtml+xml,application/json;q=0.9,*/*;q=0.8'):
     """GET a URL, following redirects, with cache support."""
     if _hops >= MAX_REDIRECTS:
         print('Error: too many redirects', file=sys.stderr)
@@ -238,11 +238,11 @@ def fetch(url: str, _hops: int = 0):
         headers, body = cached
         return 200, headers, body
 
-    status, headers, body = raw_request(url)
+    status, headers, body = raw_request(url, accept=accept)
     if status in REDIRECT_CODES:
         loc = headers.get('location', '')
         if loc:
-            return fetch(resolve_url(url, loc), _hops + 1)
+            return fetch(resolve_url(url, loc), _hops + 1, accept=accept)
 
     # Cache successful responses
     if status == 200 and headers and body:
@@ -382,6 +382,18 @@ class _DDGParser(HTMLParser):
 
 
 # ---------------------------------------------------------------------------
+# Content rendering
+# ---------------------------------------------------------------------------
+
+def format_json(body: str) -> str:
+    """Pretty-print JSON, or return raw string if parsing fails."""
+    try:
+        return json.dumps(json.loads(body), indent=2, ensure_ascii=False)
+    except (json.JSONDecodeError, ValueError):
+        return body
+
+
+# ---------------------------------------------------------------------------
 # Commands
 # ---------------------------------------------------------------------------
 
@@ -391,24 +403,31 @@ def cmd_help():
         '\n'
         'Usage:\n'
         '  go2web -u <URL>          Make an HTTP request to URL and print the response\n'
+        '  go2web -u <URL> --json   Request JSON from URL and pretty-print it\n'
         '  go2web -s <search-term>  Search the web and print the top 10 results\n'
         '                          (prompts to open a result after listing)\n'
         '  go2web -h                Show this help message\n'
         '\n'
         'Examples:\n'
         '  go2web -u https://example.com\n'
+        '  go2web -u https://api.github.com/users/github --json\n'
         '  go2web -s python tutorial\n'
         '  go2web -s "web programming"\n'
     )
 
 
-def cmd_url(url: str):
-    status, headers, body = fetch(url)
+def cmd_url(url: str, prefer_json: bool = False):
+    if prefer_json:
+        accept = 'application/json,*/*;q=0.8'
+    else:
+        accept = 'text/html,application/xhtml+xml,application/json;q=0.9,*/*;q=0.8'
+
+    status, headers, body = fetch(url, accept=accept)
     if body is None:
         return
     ct = (headers or {}).get('content-type', '')
     if 'json' in ct:
-        print(body)
+        print(format_json(body))
     else:
         print(html_to_text(body))
 
@@ -471,11 +490,13 @@ def main():
     if flag == '-u':
         if len(args) < 2:
             sys.exit('Error: -u requires a URL argument')
-        cmd_url(args[1])
+        prefer_json = '--json' in args
+        url = args[1]
+        cmd_url(url, prefer_json=prefer_json)
     elif flag == '-s':
         if len(args) < 2:
             sys.exit('Error: -s requires a search term')
-        cmd_search(' '.join(args[1:]))
+        cmd_search(' '.join(a for a in args[1:] if a != '--json'))
     else:
         print(f'Unknown option: {flag}')
         cmd_help()
