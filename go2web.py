@@ -138,12 +138,17 @@ def fetch(url: str, _hops: int = 0):
 # ---------------------------------------------------------------------------
 
 class _TextExtractor(HTMLParser):
+    # Non-void elements whose content should be fully skipped
     _SKIP = frozenset({
-        'script', 'style', 'noscript', 'head', 'meta',
-        'link', 'iframe', 'svg', 'path',
+        'script', 'style', 'noscript', 'head', 'iframe', 'svg',
+    })
+    # Void elements (no closing tag) to silently ignore
+    _VOID = frozenset({
+        'area', 'base', 'br', 'col', 'embed', 'hr', 'img', 'input',
+        'link', 'meta', 'param', 'path', 'source', 'track', 'wbr',
     })
     _BLOCK = frozenset({
-        'p', 'div', 'br', 'li', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6',
+        'p', 'div', 'li', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6',
         'tr', 'td', 'th', 'section', 'article', 'header', 'footer',
         'nav', 'main', 'blockquote',
     })
@@ -155,9 +160,9 @@ class _TextExtractor(HTMLParser):
 
     def handle_starttag(self, tag, attrs):
         t = tag.lower()
-        if t in self._SKIP:
+        if t in self._SKIP:          # non-void: track depth
             self._skip += 1
-        elif t in self._BLOCK and self._skip == 0:
+        elif t == 'br' or (t in self._BLOCK and self._skip == 0):
             self._buf.append('\n')
 
     def handle_endtag(self, tag):
